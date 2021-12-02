@@ -32,8 +32,14 @@ import tensorflow.compat.v1 as tf
 class FixedReplayDQNAgent(dqn_agent.DQNAgent):
   """An implementation of the DQN agent with fixed replay buffer(s)."""
 
-  def __init__(self, sess, num_actions, replay_data_dir, replay_suffix=None,
-               init_checkpoint_dir=None, **kwargs):
+  def __init__(self,
+               sess,
+               num_actions,
+               replay_data_dir,
+               replay_suffix=None,
+               init_checkpoint_dir=None,
+               cql_penalty_weight=0.0,
+               **kwargs):
     """Initializes the agent and constructs the components of its graph.
 
     Args:
@@ -45,6 +51,7 @@ class FixedReplayDQNAgent(dqn_agent.DQNAgent):
       init_checkpoint_dir: str, directory from which initial checkpoint before
         training is loaded if there doesn't exist any checkpoint in the current
         agent directory. If None, no initial checkpoint is loaded.
+      cql_penalty_weight: float, weight for cql loss.
       **kwargs: Arbitrary keyword arguments.
     """
     assert replay_data_dir is not None
@@ -60,6 +67,7 @@ class FixedReplayDQNAgent(dqn_agent.DQNAgent):
           init_checkpoint_dir, 'checkpoints')
     else:
       self._init_checkpoint_dir = None
+    self.cql_penalty_weight = cql_penalty_weight
     super(FixedReplayDQNAgent, self).__init__(sess, num_actions, **kwargs)
 
   def step(self, reward, observation):
@@ -92,3 +100,32 @@ class FixedReplayDQNAgent(dqn_agent.DQNAgent):
         update_horizon=self.update_horizon,
         gamma=self.gamma,
         observation_dtype=self.observation_dtype.as_numpy_dtype)
+
+  def _build_train_op(self):
+    """Builds a training op.
+    Returns:
+      train_op: An op performing one step of training from replay data.
+    """
+    replay_action_one_hot = tf.one_hot(
+        self._replay.actions, self.num_actions, 1., 0., name='action_one_hot')
+    replay_chosen_q = tf.reduce_sum(
+        self._replay_net_outputs.q_values * replay_action_one_hot,
+        axis=1,
+        name='replay_chosen_q')
+
+    target = tf.stop_gradient(self._build_target_q_op())
+    loss = tf.compat.v1.losses.huber_loss(
+        target, replay_chosen_q, reduction=tf.losses.Reduction.NONE)
+
+    # Compute CQL penalty.
+    logsumexp_q = tf.reduce_logsumexp(self._replay_net_outputs.q_values, axis=1,
+                                      name='logsumexp_q')
+    cql_loss = logsumexp_q - replay_chosen_q
+
+    if self.summary_writer is not None:
+      with tf.compat.v1.variable_scope('Losses'):
+        tf.compat.v1.summary.scalar('HuberLoss', tf.reduce_mean(loss))
+        tf.compat.v1.summary.scalar('CQLPenalty', tf.reduce_mean(cql_loss))
+
+    loss = loss + self.cql_penalty_weight * cql_loss
+    return self.optimizer.minimize(tf.reduce_mean(loss))

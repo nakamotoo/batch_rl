@@ -31,8 +31,16 @@ import tensorflow.compat.v1 as tf
 class FixedReplayQuantileAgent(quantile_agent.QuantileAgent):
   """An implementation of the DQN agent with fixed replay buffer(s)."""
 
-  def __init__(self, sess, num_actions, replay_data_dir, replay_suffix=None,
-               init_checkpoint_dir=None, **kwargs):
+  def __init__(self,
+               sess,
+               num_actions,
+               replay_data_dir,
+               replay_suffix=None,
+               init_checkpoint_dir=None,
+               cql_penalty_weight=0.0,
+               ent_penalty_weight=0.0,
+               truncate_quantile_c=1.0,
+               **kwargs):
     """Initializes the agent and constructs the components of its graph.
 
     Args:
@@ -44,6 +52,10 @@ class FixedReplayQuantileAgent(quantile_agent.QuantileAgent):
       init_checkpoint_dir: str, directory from which initial checkpoint before
         training is loaded if there doesn't exist any checkpoint in the current
         agent directory. If None, no initial checkpoint is loaded.
+      cql_penalty_weight: float, weight for cql loss.
+      ent_penalty_weight: float, weight for entropy loss.
+      truncate_quantile_c: float, proportion of bottom quantiles for
+        pessimistic Q-values
       **kwargs: Arbitrary keyword arguments.
     """
     assert replay_data_dir is not None

@@ -27,12 +27,30 @@ import gin
 import tensorflow.compat.v1 as tf
 
 
+def sample_qvalues(probabilities, support, n_samples=30):
+  # Perform inverse transform sampling.
+  u = tf.random.uniform(shape=[n_samples] + probabilities.shape.as_list()[:-1])
+  cdf = tf.math.cumsum(probabilities, axis=-1)
+  idxs = tf.argmax(
+    tf.expand_dims(cdf, axis=0) > tf.expand_dims(u, axis=-1), axis=-1)
+  return tf.gather_nd(support, tf.expand_dims(idxs, axis=-1))
+
+
 @gin.configurable
 class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
   """An implementation of the DQN agent with fixed replay buffer(s)."""
 
-  def __init__(self, sess, num_actions, replay_data_dir, replay_suffix=None,
-               init_checkpoint_dir=None, **kwargs):
+  def __init__(self,
+               sess,
+               num_actions,
+               replay_data_dir,
+               replay_suffix=None,
+               init_checkpoint_dir=None,
+               cql_penalty_weight=0.0,
+               ent_penalty_weight=0.0,
+               std_n_samples=30,
+               std_c=0.0,
+               **kwargs):
     """Initializes the agent and constructs the components of its graph.
 
     Args:
@@ -43,7 +61,12 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
         corresponding to the specific suffix in data directory.
       init_checkpoint_dir: str, directory from which initial checkpoint before
         training is loaded if there doesn't exist any checkpoint in the current
-        agent directory. If None, no initial checkpoint is loaded.
+        agent directory. If None, no initial checkpoint is loaded
+      cql_penalty_weight: float, weight for cql loss.
+      ent_penalty_weight: float, weight for entropy loss.
+      std_n_samples: int, number of samples used to estimate standard deviation
+        of Q-values.
+      std_c: float, weight for standard deviation for pessimistic Q-values.
       **kwargs: Arbitrary keyword arguments.
     """
     assert replay_data_dir is not None
@@ -59,6 +82,10 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
           init_checkpoint_dir, 'checkpoints')
     else:
       self._init_checkpoint_dir = None
+    self.cql_penalty_weight = cql_penalty_weight
+    self.ent_penalty_weight = ent_penalty_weight
+    self.std_n_samples = std_n_samples
+    self.std_c = std_c
 
     super(FixedReplayRainbowAgent, self).__init__(sess, num_actions, **kwargs)
 
@@ -92,3 +119,110 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
         update_horizon=self.update_horizon,
         gamma=self.gamma,
         observation_dtype=self.observation_dtype.as_numpy_dtype)
+
+  def _build_train_op(self):
+    """Builds a training op.
+    Returns:
+      train_op: An op performing one step of training from replay data.
+    """
+    target_distribution = tf.stop_gradient(self._build_target_distribution())
+
+    # size of indices: batch_size x 1.
+    indices = tf.range(tf.shape(self._replay_net_outputs.logits)[0])[:, None]
+    # size of reshaped_actions: batch_size x 2.
+    reshaped_actions = tf.concat([indices, self._replay.actions[:, None]], 1)
+    # For each element of the batch, fetch the logits for its selected action.
+    chosen_action_logits = tf.gather_nd(self._replay_net_outputs.logits,
+                                        reshaped_actions)
+
+    loss = tf.nn.softmax_cross_entropy_with_logits(
+        labels=target_distribution,
+        logits=chosen_action_logits)
+
+    # Compute CQL penalty.
+    logsumexp_q = tf.reduce_logsumexp(self._replay_net_outputs.q_values, axis=1,
+                                      name='logsumexp_q')
+    replay_action_one_hot = tf.one_hot(
+        self._replay.actions, self.num_actions, 1., 0., name='action_one_hot')
+    replay_chosen_q = tf.reduce_sum(
+        self._replay_net_outputs.q_values * replay_action_one_hot, axis=1,
+        name='replay_chosen_q')
+    cql_loss = logsumexp_q - replay_chosen_q
+
+    # Compute entropy penalty.
+    optimal_actions = tf.argmax(self._replay_net_outputs.q_values, axis=1)
+    reshaped_optimal_actions = tf.concat([indices, optimal_actions[:, None]], 1)    
+    optimal_action_probs = tf.gather_nd(self._replay_net_outputs.probabilities,
+                                        reshaped_optimal_actions)
+    chosen_action_probs = tf.gather_nd(self._replay_net_outputs.probabilities,
+                                       reshaped_actions)
+    ent_loss = (
+      tf.reduce_sum(optimal_action_probs * tf.math.log(optimal_action_probs), axis=1) -
+      tf.reduce_sum(chosen_action_probs * tf.math.log(chosen_action_probs), axis=1)
+    )
+  
+    if self._replay_scheme == 'prioritized':
+      # The original prioritized experience replay uses a linear exponent
+      # schedule 0.4 -> 1.0. Comparing the schedule to a fixed exponent of 0.5
+      # on 5 games (Asterix, Pong, Q*Bert, Seaquest, Space Invaders) suggested
+      # a fixed exponent actually performs better, except on Pong.
+      probs = self._replay.transition['sampling_probabilities']
+      loss_weights = 1.0 / tf.sqrt(probs + 1e-10)
+      loss_weights /= tf.reduce_max(loss_weights)
+
+      # Rainbow and prioritized replay are parametrized by an exponent alpha,
+      # but in both cases it is set to 0.5 - for simplicity's sake we leave it
+      # as is here, using the more direct tf.sqrt(). Taking the square root
+      # "makes sense", as we are dealing with a squared loss.
+      # Add a small nonzero value to the loss to avoid 0 priority items. While
+      # technically this may be okay, setting all items to 0 priority will cause
+      # troubles, and also result in 1.0 / 0.0 = NaN correction terms.
+      update_priorities_op = self._replay.tf_set_priority(
+          self._replay.indices, tf.sqrt(loss + 1e-10))
+
+      # Weight the loss by the inverse priorities.
+      loss = loss_weights * loss
+      cql_loss = loss_weights * cql_loss
+      ent_loss = loss_weights * ent_loss
+    else:
+      update_priorities_op = tf.no_op()
+
+    with tf.control_dependencies([update_priorities_op]):
+      if self.summary_writer is not None:
+        with tf.compat.v1.variable_scope('Losses'):
+          tf.compat.v1.summary.scalar('CrossEntropyLoss', tf.reduce_mean(loss))
+          tf.compat.v1.summary.scalar('CQLPenalty', tf.reduce_mean(cql_loss))
+          tf.compat.v1.summary.scalar('EntropyPenalty', tf.reduce_mean(ent_loss))
+      # Schaul et al. reports a slightly different rule, where 1/N is also
+      # exponentiated by beta. Not doing so seems more reasonable, and did not
+      # impact performance in our experiments.
+      loss = loss + self.cql_penalty_weight * cql_loss + self.ent_penalty_weight * ent_loss
+      return self.optimizer.minimize(tf.reduce_mean(loss)), loss
+
+  def _select_action(self):
+    """Select an action from the set of available actions.
+    Chooses an action randomly with probability self._calculate_epsilon(), and
+    otherwise acts greedily according to the current Q-value estimates.
+    Returns:
+       int, the selected action.
+    """
+    if self.eval_mode:
+      epsilon = self.epsilon_eval
+    else:
+      epsilon = self.epsilon_fn(
+          self.epsilon_decay_period,
+          self.training_steps,
+          self.min_replay_history,
+          self.epsilon_train)
+    if random.random() <= epsilon:
+      # Choose a random action with probability epsilon.
+      return random.randint(0, self.num_actions - 1)
+    else:
+      # Sample Q-values and compute standard deviation
+      q_values_samples = sample_qvalues(
+        self._net_outputs.probabilities, self._support, self.std_n_samples)
+      q_values_std = tf.math.reduce_std(q_values_samples, axis=0)
+      q_values = self._net_outputs.q_values - self.std_c * q_values_std
+      self._q_argmax = tf.argmax(q_values, axis=1)[0]
+      # Choose the action with highest Q-value at the current state.
+      return self._sess.run(self._q_argmax, {self.state_ph: self.state})
