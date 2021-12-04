@@ -18,8 +18,12 @@ FixedReplayRainbowAgent.epsilon_train = 0.01
 FixedReplayRainbowAgent.epsilon_eval = 0.001
 FixedReplayRainbowAgent.epsilon_decay_period = 250000  # agent steps
 FixedReplayRainbowAgent.replay_scheme = 'uniform'
-FixedReplayRainbowAgent.tf_device = '/gpu:0'  # use '/cpu:*' for non-GPU version
+FixedReplayRainbowAgent.tf_device = '/gpu:3'  # use '/cpu:*' for non-GPU version
 FixedReplayRainbowAgent.optimizer = @tf.train.AdamOptimizer()
+
+FixedReplayRainbowAgent.cql_penalty_weight = 0.0
+FixedReplayRainbowAgent.ent_penalty_weight = 0.5
+FixedReplayRainbowAgent.std_c = 0.5
 
 tf.train.AdamOptimizer.learning_rate = 0.00025
 tf.train.AdamOptimizer.epsilon = 0.0003125
