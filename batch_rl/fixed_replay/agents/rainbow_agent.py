@@ -27,15 +27,6 @@ import gin
 import tensorflow.compat.v1 as tf
 
 
-def sample_qvalues(probabilities, support, n_samples=30):
-  # Perform inverse transform sampling.
-  u = tf.random.uniform(shape=[n_samples] + probabilities.shape.as_list()[:-1])
-  cdf = tf.math.cumsum(probabilities, axis=-1)
-  idxs = tf.argmax(
-    tf.expand_dims(cdf, axis=0) > tf.expand_dims(u, axis=-1), axis=-1)
-  return tf.gather_nd(support, tf.expand_dims(idxs, axis=-1))
-
-
 @gin.configurable
 class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
   """An implementation of the DQN agent with fixed replay buffer(s)."""
@@ -48,7 +39,6 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
                init_checkpoint_dir=None,
                cql_penalty_weight=0.0,
                ent_penalty_weight=0.0,
-               std_n_samples=30,
                std_c=0.0,
                **kwargs):
     """Initializes the agent and constructs the components of its graph.
@@ -64,8 +54,6 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
         agent directory. If None, no initial checkpoint is loaded
       cql_penalty_weight: float, weight for cql loss.
       ent_penalty_weight: float, weight for entropy loss.
-      std_n_samples: int, number of samples used to estimate standard deviation
-        of Q-values.
       std_c: float, weight for standard deviation for pessimistic Q-values.
       **kwargs: Arbitrary keyword arguments.
     """
@@ -84,7 +72,6 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
       self._init_checkpoint_dir = None
     self.cql_penalty_weight = cql_penalty_weight
     self.ent_penalty_weight = ent_penalty_weight
-    self.std_n_samples = std_n_samples
     self.std_c = std_c
 
     super(FixedReplayRainbowAgent, self).__init__(sess, num_actions, **kwargs)
@@ -150,7 +137,8 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
     cql_loss = logsumexp_q - replay_chosen_q
 
     # Compute entropy penalty.
-    optimal_actions = tf.argmax(self._replay_net_outputs.q_values, axis=1)
+    optimal_actions = tf.cast(
+      tf.argmax(self._replay_net_outputs.q_values, axis=1), dtype=tf.int32)
     reshaped_optimal_actions = tf.concat([indices, optimal_actions[:, None]], 1)    
     optimal_action_probs = tf.gather_nd(self._replay_net_outputs.probabilities,
                                         reshaped_optimal_actions)
@@ -199,30 +187,36 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
       loss = loss + self.cql_penalty_weight * cql_loss + self.ent_penalty_weight * ent_loss
       return self.optimizer.minimize(tf.reduce_mean(loss)), loss
 
-  def _select_action(self):
-    """Select an action from the set of available actions.
-    Chooses an action randomly with probability self._calculate_epsilon(), and
-    otherwise acts greedily according to the current Q-value estimates.
-    Returns:
-       int, the selected action.
+  def _build_networks(self):
+    """Builds the Q-value network computations needed for acting and training.
+    These are:
+      self.online_convnet: For computing the current state's Q-values.
+      self.target_convnet: For computing the next state's target Q-values.
+      self._net_outputs: The actual Q-values.
+      self._q_argmax: The action maximizing the current state's Q-values.
+      self._replay_net_outputs: The replayed states' Q-values.
+      self._replay_next_target_net_outputs: The replayed next states' target
+        Q-values (see Mnih et al., 2015 for details).
     """
-    if self.eval_mode:
-      epsilon = self.epsilon_eval
-    else:
-      epsilon = self.epsilon_fn(
-          self.epsilon_decay_period,
-          self.training_steps,
-          self.min_replay_history,
-          self.epsilon_train)
-    if random.random() <= epsilon:
-      # Choose a random action with probability epsilon.
-      return random.randint(0, self.num_actions - 1)
-    else:
-      # Sample Q-values and compute standard deviation
-      q_values_samples = sample_qvalues(
-        self._net_outputs.probabilities, self._support, self.std_n_samples)
-      q_values_std = tf.math.reduce_std(q_values_samples, axis=0)
-      q_values = self._net_outputs.q_values - self.std_c * q_values_std
-      self._q_argmax = tf.argmax(q_values, axis=1)[0]
-      # Choose the action with highest Q-value at the current state.
-      return self._sess.run(self._q_argmax, {self.state_ph: self.state})
+
+    # _network_template instantiates the model and returns the network object.
+    # The network object can be used to generate different outputs in the graph.
+    # At each call to the network, the parameters will be reused.
+    self.online_convnet = self._create_network(name='Online')
+    self.target_convnet = self._create_network(name='Target')
+    self._net_outputs = self.online_convnet(self.state_ph)
+    # TODO(bellemare): Ties should be broken. They are unlikely to happen when
+    # using a deep network, but may affect performance with a linear
+    # approximation scheme.
+    self._replay_net_outputs = self.online_convnet(self._replay.states)
+    self._replay_next_target_net_outputs = self.target_convnet(
+        self._replay.next_states)
+
+    # Compute standard deviation as sqrt(E[Q^2] - E[Q]^2)
+    q_values_std = tf.math.sqrt(
+      tf.reduce_sum(
+        tf.math.square(self._support) * self._net_outputs.probabilities, axis=2) -
+      tf.math.square(self._net_outputs.q_values)
+    )
+    q_values = self._net_outputs.q_values - self.std_c * q_values_std
+    self._q_argmax = tf.argmax(self._net_outputs.q_values, axis=1)[0]
