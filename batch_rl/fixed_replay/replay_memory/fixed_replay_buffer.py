@@ -32,25 +32,78 @@ gfile = tf.gfile
 STORE_FILENAME_PREFIX = circular_replay_buffer.STORE_FILENAME_PREFIX
 
 
+@gin.configurable
 class FixedReplayBuffer(object):
   """Object composed of a list of OutofGraphReplayBuffers."""
 
-  def __init__(self, data_dir, replay_suffix, *args, **kwargs):  # pylint: disable=keyword-arg-before-vararg
+  def __init__(self,
+               data_dir,
+               replay_suffix,
+               observation_shape,
+               stack_size,
+               replay_capacity=1000000,
+               batch_size=32,
+               update_horizon=1,
+               gamma=0.99,
+               max_sample_attempts=1000,
+               extra_storage_types=None,
+               observation_dtype=np.uint8,
+               terminal_dtype=np.uint8,
+               action_shape=(),
+               action_dtype=np.int32,
+               reward_shape=(),
+               reward_dtype=np.float32):
     """Initialize the FixedReplayBuffer class.
 
     Args:
       data_dir: str, log Directory from which to load the replay buffer.
       replay_suffix: int, If not None, then only load the replay buffer
         corresponding to the specific suffix in data directory.
-      *args: Arbitrary extra arguments.
-      **kwargs: Arbitrary keyword arguments.
+      observation_shape: tuple of ints.
+      stack_size: int, number of frames to use in state stack.
+      replay_capacity: int, number of transitions to keep in memory.
+      batch_size: int.
+      update_horizon: int, length of update ('n' in n-step update).
+      gamma: int, the discount factor.
+      max_sample_attempts: int, the maximum number of attempts allowed to
+        get a sample.
+      extra_storage_types: list of ReplayElements defining the type of the extra
+        contents that will be stored and returned by sample_transition_batch.
+      observation_dtype: np.dtype, type of the observations. Defaults to
+        np.uint8 for Atari 2600.
+      terminal_dtype: np.dtype, type of the terminals. Defaults to np.uint8 for
+        Atari 2600.
+      action_shape: tuple of ints, the shape for the action vector. Empty tuple
+        means the action is a scalar.
+      action_dtype: np.dtype, type of elements in the action.
+      reward_shape: tuple of ints, the shape of the reward vector. Empty tuple
+        means the reward is a scalar.
+      reward_dtype: np.dtype, type of elements in the reward.
     """
-    self._args = args
-    self._kwargs = kwargs
     self._data_dir = data_dir
+    self._replay_suffix = replay_suffix
+  
+    self._observation_shape = observation_shape
+    self._stack_size = stack_size
+    self._state_shape = self._observation_shape + (self._stack_size,)
+    self._replay_capacity = replay_capacity
+    self._batch_size = batch_size
+    self._update_horizon = update_horizon
+    self._gamma = gamma
+    self._max_sample_attempts = max_sample_attempts
+    if extra_storage_types:
+      self._extra_storage_types = extra_storage_types
+    else:
+      self._extra_storage_types = []    
+    self._observation_dtype = observation_dtype
+    self._terminal_dtype = terminal_dtype
+    self._action_shape = action_shape
+    self._action_dtype = action_dtype
+    self._reward_shape = reward_shape
+    self._reward_dtype = reward_dtype
+
     self._loaded_buffers = False
     self.add_count = np.array(0)
-    self._replay_suffix = replay_suffix
     while not self._loaded_buffers:
       if replay_suffix:
         assert replay_suffix >= 0, 'Please pass a non-negative replay suffix'
@@ -74,7 +127,11 @@ class FixedReplayBuffer(object):
       tf.logging.info(
           f'Starting to load from ckpt {suffix} from {self._data_dir}')
       replay_buffer = circular_replay_buffer.OutOfGraphReplayBuffer(
-          *self._args, **self._kwargs)
+        self._observation_shape, self._stack_size, self._replay_capacity,
+        self._batch_size, self._update_horizon, self._gamma,
+        self._max_sample_attempts, self._extra_storage_types, self._observation_dtype,
+        self._terminal_dtype, self._action_shape, self._action_dtype,
+        self._reward_shape, self._reward_dtype)
       replay_buffer.load(self._data_dir, suffix)
       # pylint:disable=protected-access
       replay_capacity = replay_buffer._replay_capacity
@@ -142,7 +199,7 @@ class FixedReplayBuffer(object):
 
 
 @gin.configurable(denylist=['observation_shape', 'stack_size',
-                             'update_horizon', 'gamma'])
+                            'update_horizon', 'gamma'])
 class WrappedFixedReplayBuffer(circular_replay_buffer.WrappedReplayBuffer):
   """Wrapper of OutOfGraphReplayBuffer with an in graph sampling mechanism."""
 
@@ -188,3 +245,6 @@ class WrappedFixedReplayBuffer(circular_replay_buffer.WrappedReplayBuffer):
         action_dtype=action_dtype,
         reward_shape=reward_shape,
         reward_dtype=reward_dtype)
+
+  def reload_buffer(self, num_buffers=None):
+    self.memory.reload_buffer(num_buffers=num_buffers)

@@ -26,10 +26,11 @@ import json
 import os
 
 
-
 from absl import app
 from absl import flags
 from batch_rl.fixed_replay import run_experiment
+from batch_rl.fixed_replay.jax_agents import dqn_agent as jax_dqn_agent
+from batch_rl.fixed_replay.jax_agents import rainbow_agent as jax_rainbow_agent
 from batch_rl.fixed_replay.agents import dqn_agent
 from batch_rl.fixed_replay.agents import multi_head_dqn_agent
 from batch_rl.fixed_replay.agents import quantile_agent
@@ -68,13 +69,22 @@ def create_agent(sess, environment, replay_data_dir, summary_writer=None):
     agent = quantile_agent.FixedReplayQuantileAgent
   elif FLAGS.agent_name == 'multi_head_dqn':
     agent = multi_head_dqn_agent.FixedReplayMultiHeadDQNAgent
+  elif FLAGS.agent_name == 'jax_dqn':
+    agent = jax_dqn_agent.FixedReplayJaxDQNAgent
+  elif FLAGS.agent_name == 'jax_c51':
+    agent = jax_rainbow_agent.FixedReplayJaxRainbowAgent  
   else:
     raise ValueError('{} is not a valid agent name'.format(FLAGS.agent_name))
 
-  return agent(sess, num_actions=environment.action_space.n,
-               replay_data_dir=replay_data_dir, summary_writer=summary_writer,
-               init_checkpoint_dir=FLAGS.init_checkpoint_dir)
-
+  if FLAGS.agent_name.startswith('jax'):
+    return agent(num_actions=environment.action_space.n,
+                 replay_data_dir=replay_data_dir, summary_writer=summary_writer,
+                 init_checkpoint_dir=FLAGS.init_checkpoint_dir)
+  else:
+    return agent(sess, num_actions=environment.action_space.n,
+                 replay_data_dir=replay_data_dir, summary_writer=summary_writer,
+                 init_checkpoint_dir=FLAGS.init_checkpoint_dir)
+    
 
 
 

@@ -15,12 +15,11 @@ FixedReplayDQNAgent.target_update_period = 8000  # agent steps
 FixedReplayDQNAgent.epsilon_train = 0.01
 FixedReplayDQNAgent.epsilon_eval = 0.001
 FixedReplayDQNAgent.epsilon_decay_period = 250000  # agent steps
-FixedReplayDQNAgent.tf_device = '/gpu:3'
+FixedReplayDQNAgent.tf_device = '/gpu:1'
 # FixedReplayDQNAgent.tf_device = '/cpu:*'
 FixedReplayDQNAgent.optimizer = @tf.train.RMSPropOptimizer()
 
 FixedReplayDQNAgent.cql_penalty_weight = 0.1
-
 
 tf.train.RMSPropOptimizer.learning_rate = 0.00025
 tf.train.RMSPropOptimizer.decay = 0.95
@@ -28,10 +27,10 @@ tf.train.RMSPropOptimizer.momentum = 0.0
 tf.train.RMSPropOptimizer.epsilon = 0.00001
 tf.train.RMSPropOptimizer.centered = True
 
-atari_lib.create_atari_environment.game_name = 'Pong'
+atari_lib.create_atari_environment.game_name = 'Breakout'
 # Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
 atari_lib.create_atari_environment.sticky_actions = True
-FixedReplayRunner.num_iterations = 200
+FixedReplayRunner.num_iterations = 100
 FixedReplayRunner.training_steps = 250000  # agent steps
 FixedReplayRunner.evaluation_steps = 125000  # agent steps
 FixedReplayRunner.max_steps_per_episode = 27000  # agent steps

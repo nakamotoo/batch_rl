@@ -1,0 +1,37 @@
+# Hyperparameters follow the settings from Bellemare et al. (2017), but we
+# modify as necessary to match those used in Rainbow (Hessel et al., 2018), to
+# ensure apples-to-apples comparison.
+import dopamine.discrete_domains.atari_lib
+import batch_rl.fixed_replay.run_experiment
+import batch_rl.fixed_replay.replay_memory.fixed_replay_buffer
+import batch_rl.fixed_replay.jax_agents.rainbow_agent
+import gin.tf.external_configurables
+
+FixedReplayJaxRainbowAgent.num_atoms = 51
+FixedReplayJaxRainbowAgent.vmax = 10.
+FixedReplayJaxRainbowAgent.gamma = 0.99
+FixedReplayJaxRainbowAgent.update_horizon = 1
+FixedReplayJaxRainbowAgent.min_replay_history = 20000  # agent steps
+FixedReplayJaxRainbowAgent.update_period = 4
+FixedReplayJaxRainbowAgent.target_update_period = 8000  # agent steps
+FixedReplayJaxRainbowAgent.epsilon_train = 0.01
+FixedReplayJaxRainbowAgent.epsilon_eval = 0.001
+FixedReplayJaxRainbowAgent.epsilon_decay_period = 250000  # agent steps
+FixedReplayJaxRainbowAgent.replay_scheme = 'uniform'
+
+FixedReplayJaxRainbowAgent.cql_penalty_weight = 0.0
+FixedReplayJaxRainbowAgent.ent_penalty_weight = 0.0
+FixedReplayJaxRainbowAgent.std_c = 0.0
+
+atari_lib.create_atari_environment.game_name = 'Seaquest'
+# Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
+atari_lib.create_atari_environment.sticky_actions = True
+create_agent.agent_name = 'jax_rainbow'
+create_agent.debug_mode = True
+FixedReplayRunner.num_iterations = 100
+FixedReplayRunner.training_steps = 250000  # agent steps
+FixedReplayRunner.evaluation_steps = 125000  # agent steps
+FixedReplayRunner.max_steps_per_episode = 27000  # agent steps
+
+FixedReplayBuffer.replay_capacity = 1000000
+FixedReplayBuffer.batch_size = 32

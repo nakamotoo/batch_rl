@@ -219,4 +219,4 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
       tf.math.square(self._net_outputs.q_values)
     )
     q_values = self._net_outputs.q_values - self.std_c * q_values_std
-    self._q_argmax = tf.argmax(self._net_outputs.q_values, axis=1)[0]
+    self._q_argmax = tf.argmax(q_values, axis=1)[0]

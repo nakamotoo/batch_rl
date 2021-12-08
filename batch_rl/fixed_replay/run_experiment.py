@@ -77,7 +77,7 @@ class FixedReplayRunner(run_experiment.Runner):
     # pylint: disable=protected-access
     if not self._agent._replay_suffix:
       # Reload the replay buffer
-      self._agent._replay.memory.reload_buffer(num_buffers=5)
+      self._agent._replay.reload_buffer(num_buffers=5)
     # pylint: enable=protected-access
     self._run_train_phase()
 
