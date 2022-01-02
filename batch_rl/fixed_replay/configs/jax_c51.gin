@@ -20,10 +20,10 @@ FixedReplayJaxRainbowAgent.epsilon_decay_period = 250000  # agent steps
 FixedReplayJaxRainbowAgent.replay_scheme = 'uniform'
 
 FixedReplayJaxRainbowAgent.cql_penalty_weight = 0.0
-FixedReplayJaxRainbowAgent.ent_penalty_weight = 0.0
-FixedReplayJaxRainbowAgent.std_c = 0.0
+FixedReplayJaxRainbowAgent.ent_penalty_weight = 0.01
+FixedReplayJaxRainbowAgent.std_c = 1.0
 
-atari_lib.create_atari_environment.game_name = 'Seaquest'
+atari_lib.create_atari_environment.game_name = 'Breakout'
 # Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
 atari_lib.create_atari_environment.sticky_actions = True
 create_agent.agent_name = 'jax_rainbow'

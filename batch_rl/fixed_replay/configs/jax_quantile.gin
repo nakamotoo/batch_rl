@@ -1,0 +1,42 @@
+# Hyperparameters follow Dabney et al. (2017) but we modify as necessary to
+# match those used in Rainbow (Hessel et al., 2018), to ensure apples-to-apples
+# comparison.
+import dopamine.discrete_domains.atari_lib
+import batch_rl.fixed_replay.run_experiment
+import batch_rl.fixed_replay.replay_memory.fixed_replay_buffer
+import batch_rl.fixed_replay.jax_agents.quantile_agent
+import gin.tf.external_configurables
+
+
+FixedReplayJaxQuantileAgent.kappa = 1.0
+FixedReplayJaxQuantileAgent.num_atoms = 200
+FixedReplayJaxQuantileAgent.gamma = 0.99
+FixedReplayJaxQuantileAgent.update_horizon = 3
+FixedReplayJaxQuantileAgent.min_replay_history = 20000 # agent steps
+FixedReplayJaxQuantileAgent.update_period = 4
+FixedReplayJaxQuantileAgent.target_update_period = 8000 # agent steps
+FixedReplayJaxQuantileAgent.epsilon_train = 0.01
+FixedReplayJaxQuantileAgent.epsilon_eval = 0.001
+FixedReplayJaxQuantileAgent.epsilon_decay_period = 250000 # agent steps
+FixedReplayJaxQuantileAgent.replay_scheme = 'uniform'
+FixedReplayJaxQuantileAgent.optimizer = 'adam'
+
+create_optimizer.learning_rate = 0.00005
+create_optimizer.eps = 0.0003125
+
+FixedReplayJaxQuantileAgent.cql_penalty_weight = 0.0
+FixedReplayJaxQuantileAgent.ent_penalty_weight = 0.1
+FixedReplayJaxQuantileAgent.ent_k = 20
+FixedReplayJaxQuantileAgent.truncate_c = 0.7
+
+atari_lib.create_atari_environment.game_name = 'Breakout'
+atari_lib.create_atari_environment.sticky_actions = True
+create_agent.agent_name = 'jax_quantile'
+create_agent.debug_mode = True
+FixedReplayRunner.num_iterations = 100
+FixedReplayRunner.training_steps = 250000
+FixedReplayRunner.evaluation_steps = 125000
+FixedReplayRunner.max_steps_per_episode = 27000
+
+FixedReplayBuffer.replay_capacity = 100000
+FixedReplayBuffer.batch_size = 32

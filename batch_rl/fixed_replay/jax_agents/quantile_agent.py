@@ -1,31 +1,32 @@
 # coding=utf-8
-# Copyright 2021 The Google Research Authors.
+# Copyright 2018 The Dopamine Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""C51 agent with fixed replay buffer(s)."""
+"""An extension of Rainbow to perform quantile regression.
+This loss is computed as in "Distributional Reinforcement Learning with Quantile
+Regression" - Dabney et. al, 2017"
+"""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import functools
-import os
 
 from absl import logging
+from dopamine.jax import networks
+from dopamine.jax.agents.quantile import quantile_agent
 from batch_rl.fixed_replay.replay_memory import fixed_replay_buffer
-from dopamine.jax.agents.rainbow import rainbow_agent
-from dopamine.jax import losses
 import gin
 import jax
 import jax.numpy as jnp
@@ -34,89 +35,102 @@ import optax
 import tensorflow.compat.v1 as tf
 
 
-def compute_pessimistic_q_values(q_values: jnp.ndarray,
-                                 probabilities: jnp.ndarray,
-                                 support: jnp.ndarray,
-                                 std_c: float) -> jnp.ndarray:
-  # Compute standard deviation as sqrt(E[Q^2] - E[Q]^2)
-  q_values_std = jnp.sqrt(
-      jnp.sum(jnp.square(support) * probabilities, axis=-1) -
-      jnp.square(q_values)
-  )
-  return q_values - std_c * q_values_std
+def compute_pessimistic_q_values(logits: jnp.ndarray, truncate_c: float) -> jnp.ndarray:
+  tau = int(truncate_c * logits.shape[-1])
+  return jnp.mean(outputs.logits[..., :tau], axis=-1)
 
-                         
+
 def conservative_q_loss(q_values: jnp.ndarray, chosen_action_q: jnp.ndarray) -> jnp.ndarray:
   """Implementation of the CQL loss."""
   logsumexp_q = jax.scipy.special.logsumexp(q_values)
   return logsumexp_q - chosen_action_q
 
 
-def calibrated_ent_loss(optimal_action_probs: jnp.ndarray,
-                        chosen_action_probs: jnp.ndarray) -> jnp.ndarray:
+@functools.partial(jax.jit, static_argnums=(2,))
+def calibrated_ent_loss(optimal_action_logits: jnp.ndarray,
+                        chosen_action_logits: jnp.ndarray, k: int) -> jnp.ndarray:
   """Implementation of entropy calibration loss."""
-  return (  
-      jnp.sum(optimal_action_probs * jnp.log(optimal_action_probs + 1e-8)) -
-      jnp.sum(chosen_action_probs * jnp.log(chosen_action_probs + 1e-8))
-  )
+  optimal_diffs = optimal_action_logits[None] - optimal_action_logits[..., None]
+  optimal_action_ent = jnp.sum(jnp.tril(jnp.triu(optimal_diffs), k=k), axis=0)
+  optimal_action_ent = -jnp.mean(jnp.log(1 + optimal_action_ent / k))
+                              
+  chosen_diffs = chosen_action_logits[None] - chosen_action_logits[..., None]
+  chosen_action_ent = jnp.sum(jnp.tril(jnp.triu(chosen_diffs), k=k), axis=0)
+  chosen_action_ent = -jnp.mean(jnp.log(1 + chosen_action_ent / k))
 
-                         
-@functools.partial(jax.jit, static_argnums=(0, 3, 12, 13, 14, 15))
+  return chosen_action_ent - optimal_action_ent
+
+
+@functools.partial(jax.jit, static_argnums=(0, 3, 11, 12, 13, 14, 15, 16, 17))
 def train(network_def, online_params, target_params, optimizer, optimizer_state,
           states, actions, next_states, rewards, terminals, loss_weights,
-          support, cumulative_gamma, cql_penalty_weight=0.0, ent_penalty_weight=0.0, std_c=0.0):
+          kappa, num_atoms, cumulative_gamma,
+          cql_penalty_weight=0.0, ent_penalty_weight=0.0, ent_k=20, truncate_c=1.0):
   """Run a training step."""
   def loss_fn(params, target, loss_multipliers):
     def q_online(state):
-      return network_def.apply(params, state, support)
+      return network_def.apply(params, state)
 
     outputs = jax.vmap(q_online)(states)
+    logits = jnp.squeeze(outputs.logits)
     # Fetch the logits for its selected action. We use vmap to perform this
     # indexing across the batch.
-    chosen_action_logits = jax.vmap(lambda x, y: x[y])(outputs.logits, actions)
-    loss = jax.vmap(losses.softmax_cross_entropy_loss_with_logits)(
-        target,
-        chosen_action_logits)
-    ce_loss = jnp.mean(loss_multipliers * loss) 
+    chosen_action_logits = jax.vmap(lambda x, y: x[y])(logits, actions)
+    bellman_errors = (target[:, None, :] -
+                      chosen_action_logits[:, :, None])  # Input `u' of Eq. 9.
+    # Eq. 9 of paper.
+    huber_loss = (
+        (jnp.abs(bellman_errors) <= kappa).astype(jnp.float32) *
+        0.5 * bellman_errors ** 2 +
+        (jnp.abs(bellman_errors) > kappa).astype(jnp.float32) *
+        kappa * (jnp.abs(bellman_errors) - 0.5 * kappa))
 
+    tau_hat = ((jnp.arange(num_atoms, dtype=jnp.float32) + 0.5) /
+               num_atoms)  # Quantile midpoints.  See Lemma 2 of paper.
+    # Eq. 10 of paper.
+    tau_bellman_diff = jnp.abs(
+        tau_hat[None, :, None] - (bellman_errors < 0).astype(jnp.float32))
+    quantile_huber_loss = tau_bellman_diff * huber_loss
+    # Sum over tau dimension, average over target value dimension.
+    loss = jnp.sum(jnp.mean(quantile_huber_loss, 2), 1)
+    q_loss = jnp.mean(loss_multipliers * loss)
+
+    # Add CQL loss.
     chosen_action_q = jax.vmap(lambda x, y: x[y])(outputs.q_values, actions)
     cql_loss = jnp.mean(
       loss_multipliers * jax.vmap(conservative_q_loss)(outputs.q_values, chosen_action_q))
 
-    pessimistic_q_values = compute_pessimistic_q_values(
-      outputs.q_values, outputs.probabilities, support, std_c)
+    # Add entropy calibration loss.
+    ent_loss_fn = functools.partial(calibrated_ent_loss, k=ent_k)
+    pessimistic_q_values = compute_pessimistic_q_values(outputs.logits, truncate_c)
     optimal_actions = jnp.argmax(pessimistic_q_values, axis=-1)
-    optimal_action_probs = jax.vmap(lambda x, y: x[y])(outputs.probabilities, optimal_actions)
-    chosen_action_probs = jax.vmap(lambda x, y: x[y])(outputs.probabilities, actions)
+    optimal_action_logits = jax.vmap(lambda x, y: x[y])(logits, optimal_actions)
     ent_loss = jnp.mean(
-      loss_multipliers * jax.vmap(calibrated_ent_loss)(optimal_action_probs, chosen_action_probs))
+      loss_multipliers * jax.vmap(ent_loss_fn)(optimal_action_logits, chosen_action_logits))
 
-    mean_loss =  ce_loss + cql_penalty_weight * cql_loss + ent_penalty_weight * ent_loss
-    return mean_loss, (loss, ce_loss, cql_loss, ent_loss)
+    mean_loss =  q_loss + cql_penalty_weight * cql_loss + ent_penalty_weight * ent_loss
+    return mean_loss, (loss, q_loss, cql_loss, ent_loss)
 
   def q_target(state):
-    return network_def.apply(target_params, state, support)
+    return network_def.apply(target_params, state)
 
   grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-  target = rainbow_agent.target_distribution(q_target,
-                                             next_states,
-                                             rewards,
-                                             terminals,
-                                             support,
-                                             cumulative_gamma)
-
-  # Get the unweighted loss without taking its mean for updating priorities.
-  (_, (loss, ce_loss, cql_loss, ent_loss)), grad = grad_fn(online_params, target, loss_weights)
+  target = quantile_agent.target_distribution(q_target,
+                                              next_states,
+                                              rewards,
+                                              terminals,
+                                              cumulative_gamma)
+  (_, (loss, q_loss, cql_loss, ent_loss)), grad = grad_fn(online_params, target, loss_weights)
   updates, optimizer_state = optimizer.update(grad, optimizer_state,
                                               params=online_params)
   online_params = optax.apply_updates(online_params, updates)
-  return optimizer_state, online_params, loss, ce_loss, cql_loss, ent_loss
+  return optimizer_state, online_params, loss, q_loss, cql_loss, ent_loss
 
 
-@functools.partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 10, 11, 13))
+@functools.partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 10, 11, 12))
 def select_action(network_def, params, state, rng, num_actions, eval_mode,
                   epsilon_eval, epsilon_train, epsilon_decay_period,
-                  training_steps, min_replay_history, epsilon_fn, support, std_c):
+                  training_steps, min_replay_history, epsilon_fn, truncate_c=1.0):
   """Select an action from the set of available actions.
   Chooses an action randomly with probability self._calculate_epsilon(), and
   otherwise acts greedily according to the current Q-value estimates.
@@ -135,8 +149,7 @@ def select_action(network_def, params, state, rng, num_actions, eval_mode,
     min_replay_history: int, minimum number of steps in replay buffer
       (static_argnum).
     epsilon_fn: function used to calculate epsilon value (static_argnum).
-    support: support for the distribution.
-    std_c: float, weight for standard deviation for pessimistic Q-values.
+    truncate_c: float, proportion of lower quantiles used for pessimistic Q-values.
   Returns:
     rng: Jax random number generator.
     action: int, the selected action.
@@ -150,24 +163,16 @@ def select_action(network_def, params, state, rng, num_actions, eval_mode,
 
   rng, rng1, rng2 = jax.random.split(rng, num=3)
   p = jax.random.uniform(rng1)
-
-  outputs = network_def.apply(params, state, support)
-  # Compute standard deviation as sqrt(E[Q^2] - E[Q]^2)
-  q_values_std = jnp.sqrt(
-      jnp.sum(jnp.square(support) * outputs.probabilities, axis=-1) -
-      jnp.square(outputs.q_values)
-  )
-  pessimistic_q_values = compute_pessimistic_q_values(
-      outputs.q_values, outputs.probabilities, support, std_c)
-  return rng, jnp.where(
-      p <= epsilon,
-      jax.random.randint(rng2, (), 0, num_actions),
-      jnp.argmax(pessimistic_q_values))
+  outputs = network_def.apply(params, state)
+  pessimistic_q_values = compute_pessimistic_q_values(outputs.logits, truncate_c)
+  return rng, jnp.where(p <= epsilon,
+                        jax.random.randint(rng2, (), 0, num_actions),
+                        jnp.argmax(pessimistic_q_values))
 
 
 @gin.configurable
-class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
-  """An implementation of the DQN agent with fixed replay buffer(s)."""
+class FixedReplayJaxQuantileAgent(quantile_agent.JaxQuantileAgent):
+  """An implementation of Quantile regression DQN agent."""
 
   def __init__(self,
                num_actions,
@@ -176,10 +181,10 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
                init_checkpoint_dir=None,
                cql_penalty_weight=0.0,
                ent_penalty_weight=0.0,
-               std_c=0.0,
+               ent_k=20,
+               truncate_c=1.0,               
                **kwargs):
-    """Initializes the agent and constructs the components of its graph.
-
+    """Initializes the agent and constructs the Graph.
     Args:
       num_actions: int, number of actions the agent can take at any state.
       replay_data_dir: str, log Directory from which to load the replay buffer.
@@ -190,7 +195,8 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
         agent directory. If None, no initial checkpoint is loaded
       cql_penalty_weight: float, weight for cql loss.
       ent_penalty_weight: float, weight for entropy loss.
-      std_c: float, weight for standard deviation for pessimistic Q-values.
+      ent_k: int, number of k-nearest neighbors in entropy computation.
+      truncate_c: float, proportion of lower quantiles used for pessimistic Q-values.
       **kwargs: Arbitrary keyword arguments.
     """
     assert replay_data_dir is not None
@@ -208,16 +214,20 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
       self._init_checkpoint_dir = None
     self.cql_penalty_weight = cql_penalty_weight
     self.ent_penalty_weight = ent_penalty_weight
-    self.std_c = std_c
-    super(FixedReplayJaxRainbowAgent, self).__init__(num_actions, **kwargs)
+    self.ent_k = ent_k
+    self.truncate_c = truncate_c
+    super(FixedReplayJaxQuantileAgent, self).__init__(num_actions, **kwargs)
 
   def end_episode(self, reward, terminal=True):
     assert self.eval_mode, 'Eval mode is not set to be True.'
-    super(FixedReplayJaxRainbowAgent, self).end_episode(reward, terminal)
+    super(FixedReplayJaxQuantileAgent, self).end_episode(reward, terminal)
 
   def _build_replay_buffer(self):
     """Creates the replay buffer used by the agent."""
-
+    if self._replay_scheme not in ['uniform', 'prioritized']:
+      raise ValueError('Invalid replay scheme: {}'.format(self._replay_scheme))
+    # Both replay schemes use the same data structure, but the 'uniform' scheme
+    # sets all priorities to the same value (which yields uniform sampling).
     return fixed_replay_buffer.FixedReplayBuffer(
         data_dir=self._replay_data_dir,
         replay_suffix=self._replay_suffix,
@@ -252,8 +262,7 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
                                            self.training_steps,
                                            self.min_replay_history,
                                            self.epsilon_fn,
-                                           self._support,
-                                           self.std_c)
+                                           self.truncate_c)
     self.action = onp.asarray(self.action)
     return self.action
 
@@ -286,8 +295,7 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
                                            self.training_steps,
                                            self.min_replay_history,
                                            self.epsilon_fn,
-                                           self._support,
-                                           self.std_c)
+                                           self.truncate_c)
     self.action = onp.asarray(self.action)
     return self.action
 
@@ -309,13 +317,12 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
           # 0.5 on 5 games (Asterix, Pong, Q*Bert, Seaquest, Space Invaders)
           # suggested a fixed exponent actually performs better, except on Pong.
           probs = self.replay_elements['sampling_probabilities']
-          # Weight the loss by the inverse priorities.
           loss_weights = 1.0 / jnp.sqrt(probs + 1e-10)
           loss_weights /= jnp.max(loss_weights)
         else:
           loss_weights = jnp.ones(self.replay_elements['state'].shape[0])
 
-        self.optimizer_state, self.online_params, loss, ce_loss, cql_loss, ent_loss = train(
+        self.optimizer_state, self.online_params, loss, q_loss, cql_loss, ent_loss = train(
             self.network_def,
             self.online_params,
             self.target_network_params,
@@ -327,11 +334,13 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
             self.replay_elements['reward'],
             self.replay_elements['terminal'],
             loss_weights,
-            self._support,
+            self._kappa,
+            self._num_atoms,
             self.cumulative_gamma,
             self.cql_penalty_weight,
             self.ent_penalty_weight,
-            self.std_c)
+            self.ent_k,
+            self.truncate_c)
 
         if self._replay_scheme == 'prioritized':
           # Rainbow and prioritized replay are parametrized by an exponent
@@ -346,7 +355,7 @@ class FixedReplayJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
 
         if self.summary_writer is not None:
           summary = tf.Summary(value=[
-              tf.Summary.Value(tag='Losses/CrossEntropyLoss', simple_value=ce_loss),
+              tf.Summary.Value(tag='Losses/QuantileLoss', simple_value=q_loss),
               tf.Summary.Value(tag='Losses/CQLPenalty', simple_value=cql_loss),
               tf.Summary.Value(tag='Losses/EntropyPenalty', simple_value=ent_loss)])
           self.summary_writer.add_summary(summary, self.training_steps)

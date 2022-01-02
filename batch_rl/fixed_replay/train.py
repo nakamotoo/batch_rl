@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-r"""The entry point for running experiments with fixed replay datasets.
+"""The entry point for running experiments with fixed replay datasets.
 
 """
 
@@ -31,6 +31,7 @@ from absl import flags
 from batch_rl.fixed_replay import run_experiment
 from batch_rl.fixed_replay.jax_agents import dqn_agent as jax_dqn_agent
 from batch_rl.fixed_replay.jax_agents import rainbow_agent as jax_rainbow_agent
+from batch_rl.fixed_replay.jax_agents import quantile_agent as jax_quantile_agent
 from batch_rl.fixed_replay.agents import dqn_agent
 from batch_rl.fixed_replay.agents import multi_head_dqn_agent
 from batch_rl.fixed_replay.agents import quantile_agent
@@ -73,6 +74,8 @@ def create_agent(sess, environment, replay_data_dir, summary_writer=None):
     agent = jax_dqn_agent.FixedReplayJaxDQNAgent
   elif FLAGS.agent_name == 'jax_c51':
     agent = jax_rainbow_agent.FixedReplayJaxRainbowAgent  
+  elif FLAGS.agent_name == 'jax_quantile':
+    agent = jax_quantile_agent.FixedReplayJaxQuantileAgent  
   else:
     raise ValueError('{} is not a valid agent name'.format(FLAGS.agent_name))
 
