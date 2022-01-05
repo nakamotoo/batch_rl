@@ -137,16 +137,25 @@ class FixedReplayRainbowAgent(rainbow_agent.RainbowAgent):
     cql_loss = logsumexp_q - replay_chosen_q
 
     # Compute entropy penalty.
-    optimal_actions = tf.cast(
-      tf.argmax(self._replay_net_outputs.q_values, axis=1), dtype=tf.int32)
+    # Compute standard deviation as sqrt(E[Q^2] - E[Q]^2)
+    q_values_std = tf.math.sqrt(
+      tf.reduce_sum(
+        tf.math.square(self._support) * self.replay_net_outputs.probabilities, axis=2) -
+      tf.math.square(self._replay_net_outputs.q_values)
+    )
+    q_values = self._replay_net_outputs.q_values - self.std_c * q_values_std
+
+    optimal_actions = tf.cast(tf.argmax(q_values, axis=1), dtype=tf.int32)
     reshaped_optimal_actions = tf.concat([indices, optimal_actions[:, None]], 1)    
     optimal_action_probs = tf.gather_nd(self._replay_net_outputs.probabilities,
                                         reshaped_optimal_actions)
     chosen_action_probs = tf.gather_nd(self._replay_net_outputs.probabilities,
                                        reshaped_actions)
     ent_loss = (
-      tf.reduce_sum(optimal_action_probs * tf.math.log(optimal_action_probs), axis=1) -
-      tf.reduce_sum(chosen_action_probs * tf.math.log(chosen_action_probs), axis=1)
+      tf.reduce_sum(
+        optimal_action_probs * tf.math.log(optimal_action_probs + 1e-8), axis=1) -
+      tf.reduce_sum(
+        chosen_action_probs * tf.math.log(chosen_action_probs + 1e-8), axis=1)
     )
   
     if self._replay_scheme == 'prioritized':
