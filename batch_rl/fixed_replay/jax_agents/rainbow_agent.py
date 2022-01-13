@@ -152,11 +152,6 @@ def select_action(network_def, params, state, rng, num_actions, eval_mode,
   p = jax.random.uniform(rng1)
 
   outputs = network_def.apply(params, state, support)
-  # Compute standard deviation as sqrt(E[Q^2] - E[Q]^2)
-  q_values_std = jnp.sqrt(
-      jnp.sum(jnp.square(support) * outputs.probabilities, axis=-1) -
-      jnp.square(outputs.q_values)
-  )
   pessimistic_q_values = compute_pessimistic_q_values(
       outputs.q_values, outputs.probabilities, support, std_c)
   return rng, jnp.where(

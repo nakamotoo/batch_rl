@@ -37,7 +37,7 @@ import tensorflow.compat.v1 as tf
 
 def compute_pessimistic_q_values(logits: jnp.ndarray, truncate_c: float) -> jnp.ndarray:
   tau = int(truncate_c * logits.shape[-1])
-  return jnp.mean(outputs.logits[..., :tau], axis=-1)
+  return jnp.mean(logits[..., :tau], axis=-1)
 
 
 def conservative_q_loss(q_values: jnp.ndarray, chosen_action_q: jnp.ndarray) -> jnp.ndarray:
@@ -72,7 +72,7 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
       return network_def.apply(params, state)
 
     outputs = jax.vmap(q_online)(states)
-    logits = jnp.squeeze(outputs.logits)
+    logits = jnp.squeeze(jnp.sort(outputs.logits, axis=-1))
     # Fetch the logits for its selected action. We use vmap to perform this
     # indexing across the batch.
     chosen_action_logits = jax.vmap(lambda x, y: x[y])(logits, actions)
@@ -102,7 +102,7 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
 
     # Add entropy calibration loss.
     ent_loss_fn = functools.partial(calibrated_ent_loss, k=ent_k)
-    pessimistic_q_values = compute_pessimistic_q_values(outputs.logits, truncate_c)
+    pessimistic_q_values = compute_pessimistic_q_values(logits, truncate_c)
     optimal_actions = jnp.argmax(pessimistic_q_values, axis=-1)
     optimal_action_logits = jax.vmap(lambda x, y: x[y])(logits, optimal_actions)
     ent_loss = jnp.mean(
@@ -164,7 +164,8 @@ def select_action(network_def, params, state, rng, num_actions, eval_mode,
   rng, rng1, rng2 = jax.random.split(rng, num=3)
   p = jax.random.uniform(rng1)
   outputs = network_def.apply(params, state)
-  pessimistic_q_values = compute_pessimistic_q_values(outputs.logits, truncate_c)
+  pessimistic_q_values = compute_pessimistic_q_values(
+    jnp.sort(outputs.logits, axis=-1), truncate_c)
   return rng, jnp.where(p <= epsilon,
                         jax.random.randint(rng2, (), 0, num_actions),
                         jnp.argmax(pessimistic_q_values))
