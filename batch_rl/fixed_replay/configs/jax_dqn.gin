@@ -1,0 +1,35 @@
+# Hyperparameters follow the classic Nature DQN, but we modify as necessary to
+# match those used in Rainbow (Hessel et al., 2018), to ensure apples-to-apples
+# comparison.
+import dopamine.discrete_domains.atari_lib
+import batch_rl.fixed_replay.run_experiment
+import batch_rl.fixed_replay.replay_memory.fixed_replay_buffer
+import batch_rl.fixed_replay.jax_agents.dqn_agent
+import gin.tf.external_configurables
+
+FixedReplayJaxDQNAgent.gamma = 0.99
+FixedReplayJaxDQNAgent.update_horizon = 1
+FixedReplayJaxDQNAgent.min_replay_history = 20000  # agent steps
+FixedReplayJaxDQNAgent.update_period = 4
+FixedReplayJaxDQNAgent.target_update_period = 8000  # agent steps
+FixedReplayJaxDQNAgent.epsilon_train = 0.01
+FixedReplayJaxDQNAgent.epsilon_eval = 0.001
+FixedReplayJaxDQNAgent.epsilon_decay_period = 250000  # agent steps
+FixedReplayJaxDQNAgent.optimizer = 'adam'
+create_optimizer.learning_rate = 6.25e-5
+create_optimizer.eps = 1.5e-4
+
+FixedReplayJaxDQNAgent.cql_penalty_weight = 0.1
+
+atari_lib.create_atari_environment.game_name = 'Breakout'
+# Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
+atari_lib.create_atari_environment.sticky_actions = True
+create_agent.agent_name = 'jax_dqn'
+create_agent.debug_mode = True
+FixedReplayRunner.num_iterations = 100
+FixedReplayRunner.training_steps = 250000  # agent steps
+FixedReplayRunner.evaluation_steps = 125000  # agent steps
+FixedReplayRunner.max_steps_per_episode = 27000  # agent steps
+
+FixedReplayBuffer.replay_capacity = 10000
+FixedReplayBuffer.batch_size = 32

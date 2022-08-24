@@ -4,7 +4,7 @@
 import dopamine.agents.rainbow.rainbow_agent
 import dopamine.discrete_domains.atari_lib
 import batch_rl.fixed_replay.run_experiment
-import dopamine.replay_memory.prioritized_replay_buffer
+import batch_rl.fixed_replay.replay_memory.fixed_replay_buffer
 import gin.tf.external_configurables
 
 FixedReplayRainbowAgent.num_atoms = 51
@@ -18,20 +18,25 @@ FixedReplayRainbowAgent.epsilon_train = 0.01
 FixedReplayRainbowAgent.epsilon_eval = 0.001
 FixedReplayRainbowAgent.epsilon_decay_period = 250000  # agent steps
 FixedReplayRainbowAgent.replay_scheme = 'uniform'
-FixedReplayRainbowAgent.tf_device = '/gpu:0'  # use '/cpu:*' for non-GPU version
+FixedReplayRainbowAgent.tf_device = '/gpu:1'  # use '/cpu:*' for non-GPU version
 FixedReplayRainbowAgent.optimizer = @tf.train.AdamOptimizer()
+
+FixedReplayRainbowAgent.cql_penalty_weight = 0.0
+FixedReplayRainbowAgent.ent_penalty_weight = 0.0
+FixedReplayRainbowAgent.std_c = 0.0
 
 tf.train.AdamOptimizer.learning_rate = 0.00025
 tf.train.AdamOptimizer.epsilon = 0.0003125
 
-atari_lib.create_atari_environment.game_name = 'Pong'
+atari_lib.create_atari_environment.game_name = 'Breakout'
 # Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
 atari_lib.create_atari_environment.sticky_actions = True
-create_agent.agent_name = 'rainbow'
-FixedReplayRunner.num_iterations = 200
+FixedReplayRunner.num_iterations = 100
 FixedReplayRunner.training_steps = 250000  # agent steps
 FixedReplayRunner.evaluation_steps = 125000  # agent steps
 FixedReplayRunner.max_steps_per_episode = 27000  # agent steps
 
-WrappedPrioritizedReplayBuffer.replay_capacity = 1000000
-WrappedPrioritizedReplayBuffer.batch_size = 32
+WrappedFixedReplayBuffer.replay_capacity = 1000000
+FixedReplayBuffer.replay_capacity = 1000000
+WrappedFixedReplayBuffer.batch_size = 32
+FixedReplayBuffer.batch_size = 32
