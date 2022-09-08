@@ -32,6 +32,7 @@ from batch_rl.fixed_replay import run_experiment
 from batch_rl.fixed_replay.jax_agents import dqn_agent as jax_dqn_agent
 from batch_rl.fixed_replay.jax_agents import rainbow_agent as jax_rainbow_agent
 from batch_rl.fixed_replay.jax_agents import quantile_agent as jax_quantile_agent
+from batch_rl.fixed_replay.jax_agents import uncertainty_agent as jax_uncertainty_agent
 from batch_rl.fixed_replay.agents import dqn_agent
 from batch_rl.fixed_replay.agents import multi_head_dqn_agent
 from batch_rl.fixed_replay.agents import quantile_agent
@@ -76,6 +77,8 @@ def create_agent(sess, environment, replay_data_dir, summary_writer=None):
     agent = jax_rainbow_agent.FixedReplayJaxRainbowAgent  
   elif FLAGS.agent_name == 'jax_quantile':
     agent = jax_quantile_agent.FixedReplayJaxQuantileAgent  
+  elif FLAGS.agent_name == 'jax_uncertainty':
+    agent = jax_quantile_agent.FixedReplayJaxUncertaintyAgent  
   else:
     raise ValueError('{} is not a valid agent name'.format(FLAGS.agent_name))
 

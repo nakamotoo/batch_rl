@@ -1,0 +1,46 @@
+# Hyperparameters follow the classic Nature DQN, but we modify as necessary to
+# match those used in Rainbow (Hessel et al., 2018), to ensure apples-to-apples
+# comparison.
+import dopamine.discrete_domains.atari_lib
+import dopamine.jax.agents.dqn.dqn_agent
+import batch_rl.fixed_replay.run_experiment
+import batch_rl.fixed_replay.replay_memory.fixed_replay_buffer
+import batch_rl.jax.networks
+import batch_rl.fixed_replay.jax_agents.uncertainty_agent
+
+JaxDQNAgent.gamma = 0.99
+JaxDQNAgent.update_horizon = 1
+JaxDQNAgent.min_replay_history = 20000  # agent steps
+JaxDQNAgent.update_period = 4
+JaxDQNAgent.target_update_period = 8000  # agent steps
+JaxDQNAgent.epsilon_train = 0.01
+JaxDQNAgent.epsilon_eval = 0.001
+JaxDQNAgent.epsilon_decay_period = 250000  # agent steps
+JaxDQNAgent.summary_writing_frequency = 10000
+JaxDQNAgent.min_replay_history = 32
+# Note: We are using the Adam optimizer by default for JaxDQN, which differs
+#       from the original NatureDQN and the dopamine TensorFlow version. In
+#       the experiments we have ran, we have found that using Adam yields
+#       improved training performance.
+JaxDQNAgent.optimizer = 'adam'
+
+FixedReplayJaxUncertaintyAgent.delta_embedding_dim = 64
+FixedReplayJaxUncertaintyAgent.num_delta_samples = 16
+FixedReplayJaxUncertaintyAgent.num_delta_prime_samples = 16
+FixedReplayJaxUncertaintyAgent.dr3_alpha = 0.03
+FixedReplayJaxUncertaintyAgent.lcb_alpha = 0.1
+FixedReplayJaxUncertaintyAgent.lcb_delta = 0.25
+FixedReplayJaxUncertaintyAgent.lcb_threshold = 0.9
+
+atari_lib.create_atari_environment.game_name = 'Breakout'
+# Sticky actions with probability 0.25, as suggested by (Machado et al., 2017).
+atari_lib.create_atari_environment.sticky_actions = True
+create_agent.agent_name = 'jax_uncertainty'
+create_agent.debug_mode = True
+FixedReplayRunner.num_iterations = 100
+FixedReplayRunner.training_steps = 250000
+FixedReplayRunner.evaluation_steps = 125000
+FixedReplayRunner.max_steps_per_episode = 27000
+
+FixedReplayBuffer.replay_capacity = 100000
+FixedReplayBuffer.batch_size = 32
