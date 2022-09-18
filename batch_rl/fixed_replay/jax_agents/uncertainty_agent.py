@@ -115,33 +115,31 @@ def target_delta_values(network_def, online_params, target_params, next_states,
 
 
 @functools.partial(
-    jax.jit, static_argnums=(0, 3, 5, 8, 15, 16, 17, 18, 19, 20, 21))
+    jax.jit, static_argnums=(0, 3, 10, 11, 12, 13, 14, 15))
 def train(network_def, online_params, target_params, optimizer, optimizer_state,
-          rnd_network_def, rnd_online_params, rnd_target_params, rnd_optimizer,
-          rnd_optimizer_state, states, actions, next_states, rewards, terminals,
+          states, actions, next_states, rewards, terminals,
           num_delta_samples, num_delta_prime_samples, dr3_alpha, lcb_alpha, 
-          lcb_delta, cumulative_gamma, double_dqn, rng):
+          cumulative_gamma, double_dqn, rng):
   """Run a training step."""
   batch_size = states.shape[0]
   rng, delta_rng = jax.random.split(rng, num=2)
   deltas = jax.random.uniform(delta_rng, shape=[batch_size, num_delta_samples])
 
-  def rnd_loss_fn(rnd_params):
+  # def rnd_loss_fn(rnd_params):
+  # 
+  #   def rnd(state):
+  #     return rnd_network_def.apply(rnd_params, state)
+  # 
+  #   def target_rnd(state):
+  #     return rnd_network_def.apply(rnd_target_params, state)
+  # 
+  #   rnd_values = jax.vmap(rnd)(states)
+  #   target_rnd_values = jax.lax.stop_gradient(jax.vmap(target_rnd)(states))
+  #   bonuses = jnp.sum((rnd_values - target_rnd_values)**2, axis=-1)
+  #   rnd_loss = jnp.mean(bonuses)
+  #   return rnd_loss, jax.lax.stop_gradient(bonuses)
 
-    def rnd(state):
-      return rnd_network_def.apply(rnd_params, state)
-
-    def target_rnd(state):
-      return rnd_network_def.apply(rnd_target_params, state)
-
-    rnd_values = jax.vmap(rnd)(states)
-    target_rnd_values = jax.lax.stop_gradient(jax.vmap(target_rnd)(states))
-    bonuses = jnp.sum((rnd_values - target_rnd_values)**2, axis=-1)
-    rnd_loss = jnp.mean(bonuses)
-    return rnd_loss, jax.lax.stop_gradient(bonuses)
-
-  def loss_fn(params, target_ub_delta_vals, target_lb_delta_vals, bonuses,
-              delta_samples):
+  def loss_fn(params, target_ub_delta_vals, target_lb_delta_vals, delta_samples):
 
     def online(state, deltas):
       return network_def.apply(params, state, deltas)
@@ -155,9 +153,10 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
     dr3_loss = compute_dr3_loss(representations, next_state_representations)
 
     # Compute CQL coefficients.
+    bonuses = jnp.einsum('ij,ij->i', representations, representations)
     delta_samples_bonuses = deltas[..., None] - delta_samples
     b = lcb_alpha * jnp.clip(
-        bonuses[:, None, None] * jnp.log(1 / delta_samples_bonuses),
+        jnp.sqrt(bonuses[:, None, None] * jnp.log(1 / delta_samples_bonuses)),
         a_min=1e-6,
         a_max=1e2)
 
@@ -176,9 +175,6 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
     target_ub_delta_primes = jnp.mean(
         jax.vmap(lambda x, y: x[jnp.arange(num_delta_samples), y])(
             delta_samples, ub_bellman_argmin) / deltas)
-    ub_cql_alpha = jnp.mean(
-        jax.vmap(lambda x, y: x[jnp.arange(num_delta_samples), y])(
-            b, ub_bellman_argmin))
 
     replay_action_lb_delta_vals = jax.vmap(
         lambda x, y: x[:, y][..., None])(predicted.lb_delta_values, actions)
@@ -195,44 +191,17 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
     target_lb_delta_primes = jnp.mean(
         jax.vmap(lambda x, y: x[jnp.arange(num_delta_samples), y])(
             delta_samples, lb_bellman_argmax) / deltas)
-    lb_cql_alpha = jnp.mean(
-        jax.vmap(lambda x, y: x[jnp.arange(num_delta_samples), y])(
-            b, lb_bellman_argmax))
 
     bellman_loss = ub_bellman_loss + lb_bellman_loss + dr3_alpha * dr3_loss
     return bellman_loss, (target_ub_delta_primes, target_lb_delta_primes,
-                          ub_cql_alpha, lb_cql_alpha)
-
-  def compute_metrics_fn(params):
-    # Only for logging.
-    delta = jnp.array([lcb_delta])
-
-    def online(state):
-      return network_def.apply(params, state, delta)
-
-    predicted = jax.vmap(online)(states)
-
-    ub_delta_values = predicted.ub_delta_values[:, 0]
-    replay_action_ub_delta_values = jax.vmap(lambda x, y: x[y])(ub_delta_values,
-                                                                actions)
-    ub_delta_vals_data = jnp.mean(replay_action_ub_delta_values)
-    ub_delta_vals_pi = jnp.mean(jnp.max(ub_delta_values, axis=-1))
-
-    lb_delta_values = predicted.lb_delta_values[:, 0]
-    replay_action_lb_delta_values = jax.vmap(lambda x, y: x[y])(lb_delta_values,
-                                                                actions)
-    lb_delta_vals_data = jnp.mean(replay_action_lb_delta_values)
-    lb_delta_vals_pi = jnp.mean(jnp.max(lb_delta_values, axis=-1))
-
-    return (ub_delta_vals_data, ub_delta_vals_pi, lb_delta_vals_data,
-            lb_delta_vals_pi)
+                          jnp.mean(bonuses))
 
   # Train the RND network. Use errors as exploration bonuses.
-  rnd_grad_fn = jax.value_and_grad(rnd_loss_fn, has_aux=True)
-  (rnd_loss, bonuses), rnd_grad = rnd_grad_fn(rnd_online_params)
-  rnd_updates, rnd_optimizer_state = rnd_optimizer.update(
-      rnd_grad, rnd_optimizer_state, params=rnd_online_params)
-  rnd_online_params = optax.apply_updates(rnd_online_params, rnd_updates)
+  # rnd_grad_fn = jax.value_and_grad(rnd_loss_fn, has_aux=True)
+  # (rnd_loss, bonuses), rnd_grad = rnd_grad_fn(rnd_online_params)
+  # rnd_updates, rnd_optimizer_state = rnd_optimizer.update(
+  #     rnd_grad, rnd_optimizer_state, params=rnd_online_params)
+  # rnd_online_params = optax.apply_updates(rnd_online_params, rnd_updates)
 
   # Train the delta-values network
   rng, target_rng = jax.random.split(rng, num=2)
@@ -245,21 +214,55 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
 
   grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
   (loss, aux), grad = grad_fn(
-      online_params, target_ub_delta_vals, target_lb_delta_vals,
-      bonuses, delta_samples)
+      online_params, target_ub_delta_vals, target_lb_delta_vals, delta_samples)
   ub_delta_prime, lb_delta_prime, ub_cql_alpha, lb_cql_alpha = aux
   updates, optimizer_state = optimizer.update(
       grad, optimizer_state, params=online_params)
-  online_params = optax.apply_updates(online_params, updates)
-  (ub_delta_vals_data, ub_delta_vals_pi, lb_delta_vals_data,
-   lb_delta_vals_pi) = compute_metrics_fn(online_params)
   return (rng, optimizer_state, online_params,
           rnd_optimizer_state, rnd_online_params, loss, rnd_loss,
-          ub_delta_vals_data, ub_delta_vals_pi,
-          lb_delta_vals_data, lb_delta_vals_pi,
-          ub_delta_prime, lb_delta_prime,
-          ub_cql_alpha, lb_cql_alpha)
+          ub_delta_prime, lb_delta_prime, ub_cql_alpha, lb_cql_alpha)
 
+
+@functools.partial(jax.jit, static_argnums=(0, 4))
+def compute_metrics(network_def, online_params, states, actions, lcb_deltas):
+  """Compute metrics to log on tensorboard."""
+  deltas = jnp.array(deltas)
+
+  def online(state):
+    return network_def.apply(params, state, deltas)
+
+  predicted = jax.vmap(online)(states)
+
+  replay_action_ub_delta_values = jax.vmap(lambda x, y: x[:, y])(
+    predicted.ub_delta_values, actions)
+  ub_delta_vals_data = jnp.mean(replay_action_ub_delta_values, axis=0)
+  ub_delta_vals_pi = jnp.mean(jnp.max(predicted.ub_delta_values, axis=-1))
+
+  replay_action_lb_delta_values = jax.vmap(lambda x, y: x[:, y])(
+    predicted.lb_delta_values, actions)
+  lb_delta_vals_data = jnp.mean(replay_action_lb_delta_values, axis=0)
+  lb_delta_vals_pi = jnp.mean(jnp.max(predicted.lb_delta_values, axis=-1), axis=0)
+  return (ub_delta_vals_data, ub_delta_vals_pi,
+          lb_delta_vals_data, lb_delta_vals_pi)
+
+
+@functools.partial(jax.jit, static_argnums=(0, 2, 5, 6, 7, 8))
+def compute_logp_deltas(network_def, online_params, state, action, next_state,
+                        reward, terminal, cumulative_gamma, lcb_deltas):
+  """Compute metrics to log on tensorboard."""
+  deltas = jnp.array(deltas)
+
+  is_terminal_multiplier = 1. - terminals.astype(jnp.float32)
+  # Incorporate terminal state to discount factor.
+  gamma_with_terminal = cumulative_gamma * is_terminal_multiplier
+
+  predicted = network_def.apply(params, states, deltas)
+  next_predicted = network_def.apply(params, next_states, deltas)
+
+  replay_action_lb_delta_values = predicted.lb_delta_values[:, actions]
+  targets = (rewards + gamma_with_terminal *
+             jnp.max(next_predicted.lb_delta_values, axis=-1))
+  return -(replay_action_lb_delta_values - targets)**2
 
 
 @functools.partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 9, 10, 12, 13))
@@ -332,7 +335,6 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
                num_delta_prime_samples=32,
                dr3_alpha=0.0,
                lcb_alpha=1.0,
-               lcb_delta=0.25,
                lcb_threshold=0.9,
                double_dqn=False,
                summary_writer=None,
@@ -348,7 +350,6 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
       num_delta_prime_samples: int, number of delta' samples in backups
       dr3_alpha: float, coefficient for DR3 loss.
       lcb_alpha: float, coefficient on confidence widths
-      lcb_delta: float, delta used for offline action selection.
       lcb_threshold: float, threshold on the lower-bounds for offline
         action selection.
       double_dqn: bool, whether to use double Q-networks.
@@ -370,7 +371,7 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
     else:
       self._init_checkpoint_dir = None
 
-    self.rnd_network_def = networks.RNDNetwork(num_actions=num_actions)
+    # self.rnd_network_def = networks.RNDNetwork(num_actions=num_actions)
     super().__init__(
         num_actions,
         network=functools.partial(
@@ -384,9 +385,11 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
 
     self._dr3_alpha = dr3_alpha
     self._lcb_alpha = lcb_alpha
-    self._lcb_delta = lcb_delta
-    self._lcb_threshold = _lcb_threshold
-
+    self._lcb_threshold = lcb_threshold
+    self._lcb_deltas = onp.linspace(0.1, 0.9, 9)
+    self._lcb_delta = 0.1
+    self._logp_lcb_deltas = onp.zeros(9)
+  
   def _build_replay_buffer(self):
     """Creates the fixed replay buffer used by the agent."""
     if self.replay_scheme not in ['uniform', 'prioritized']:
@@ -409,17 +412,15 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
     self.optimizer = dqn_agent.create_fine_tuning_optimizer(
         self._optimizer_name, inject_hparams=True)
     self.optimizer_state = self.optimizer.init(self.online_params)
-    self._pretraining_lr = float(
-        self.optimizer_state.hyperparams['learning_rate'])
     self.target_network_params = self.online_params
     # RND network and optimizer
-    self.rnd_online_params = self.rnd_network_def.init(
-        rng2, x=self.state)
-    self.rnd_optimizer = dqn_agent.create_fine_tuning_optimizer(
-        self._optimizer_name, learning_rate=1e-5, inject_hparams=True)
-    self.rnd_optimizer_state = self.rnd_optimizer.init(self.rnd_online_params)
-    self.rnd_target_network_params = self.rnd_network_def.init(
-        rng3, x=self.state)
+    # self.rnd_online_params = self.rnd_network_def.init(
+    #   rng2, x=self.state)
+    # self.rnd_optimizer = dqn_agent.create_fine_tuning_optimizer(
+    #     self._optimizer_name, learning_rate=1e-5, inject_hparams=True)
+    # self.rnd_optimizer_state = self.rnd_optimizer.init(self.rnd_online_params)
+    # self.rnd_target_network_params = self.rnd_network_def.init(
+    #     rng3, x=self.state)
 
   def begin_episode(self, observation):
     """Returns the agent's first action for this episode.
@@ -433,7 +434,7 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
     self._reset_state()
     self._record_observation(observation)
 
-    if not (self.pretraining or self.eval_mode):
+    if not self.eval_mode:
       self._train_step()
 
     self._rng, self.action = select_action(
@@ -444,6 +445,23 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
         self.epsilon_fn)
     self.action = onp.asarray(self.action)
     return self.action
+
+  def end_episode(self, reward):
+    """Signals the end of the episode to the agent.
+    We store the observation of the current time step, which is the last
+    observation of the episode.
+    Args:
+      reward: float, the last reward from the environment.
+    """
+    if not self.eval_mode:
+      self._store_transition(self._observation, self.action, reward, True)
+
+    if self.eval_mode:
+      self._logp_lcb_deltas += compute_logp_deltas(
+        self.network_def, self.online_params, self.preprocess_fn(self.state),
+        self.action, self.preprocess_fn(self.state), reward, True,
+        self._lcb_deltas, self.cumulative_gamma)
+      self._lcb_delta = self._lcb_deltas[onp.argmax(self._logp_lcb_deltas)]
 
   def step(self, reward, observation):
     """Records the most recent transition and returns the agent's next action.
@@ -459,11 +477,20 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
       int, the selected action.
     """
     self._last_observation = self._observation
+    self.last_state = onp.copy(self.state)
     self._record_observation(observation)
 
-    if not (self.pretraining or self.eval_mode):
+    if not self.eval_mode:
       self._store_transition(self._last_observation, self.action, reward, False)
       self._train_step()
+
+    if self.eval_mode:
+      # Update deltas and sample delta for action selection.
+      self._logp_lcb_deltas += compute_logp_deltas(
+        self.network_def, self.online_params, self.preprocess_fn(self.last_state),
+        self.action, self.preprocess_fn(self.state), reward, False,
+        self._lcb_deltas, self.cumulative_gamma)
+      self._lcb_delta = self._lcb_deltas[onp.argmax(self._logp_lcb_deltas)]
 
     self._rng, self.action = select_action(
         self.network_def, self.online_params, self.preprocess_fn(self.state),
@@ -486,47 +513,28 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
   def _opt_step(self, replay_elements, loss_prefix, target_update_period):
     (self._rng, self.optimizer_state, self.online_params,
      self.rnd_optimizer_state, self.rnd_online_params, loss, rnd_loss,
-     ub_delta_data, ub_delta_pi, lb_delta_data, lb_delta_pi,
-     mean_ub_delta_prime, mean_lb_delta_prime,
-     ub_cql_alpha, lb_cql_alpha) = train(
+     mean_ub_delta_prime, mean_lb_delta_prime, mean_bonus) = train(
          self.network_def, self.online_params, self.target_network_params,
-         self.optimizer, self.optimizer_state, self.rnd_network_def,
-         self.rnd_online_params, self.rnd_target_network_params,
-         self.rnd_optimizer, self.rnd_optimizer_state,
+         self.optimizer, self.optimizer_state,
          self.preprocess_fn(replay_elements['state']),
          replay_elements['action'],
          self.preprocess_fn(replay_elements['next_state']),
          replay_elements['reward'], replay_elements['terminal'],
          self.num_delta_samples, self.num_delta_prime_samples, self._dr3_alpha,
-         self._lcb_alpha, self._lcb_delta, self.cumulative_gamma, self.double_dqn,
+         self._lcb_alpha, self.cumulative_gamma, self.double_dqn,
          self._rng)
-
+    (ub_delta_data, ub_delta_pi, lb_delta_data, lb_delta_pi) = compute_metrics(
+        self.network_def, self.online_params,
+        self.preprocess_fn(replay_elements['state']),
+        replay_elements['action'], self._lcb_deltas)
     if (self.summary_writer is not None and self.training_steps > 0 and
         self.training_steps > 0 and
         self.training_steps % self.summary_writing_frequency == 0):
       with self.summary_writer.as_default():
         tf.summary.scalar(
             f'{loss_prefix}/Bellman', loss, step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/RND', rnd_loss, step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/lcb_delta', lcb_delta, step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/ub_delta_vals_data',
-            ub_delta_data,
-            step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/ub_delta_vals_pi',
-            ub_delta_pi,
-            step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/lb_delta_vals_data',
-            lb_delta_data,
-            step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/lb_delta_vals_pi',
-            lb_delta_pi,
-            step=self.training_steps)
+        # tf.summary.scalar(
+        #     f'{loss_prefix}/RND', rnd_loss, step=self.training_steps)
         tf.summary.scalar(
             f'{loss_prefix}/backup_ub_delta_prime',
             mean_ub_delta_prime,
@@ -536,12 +544,29 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
             mean_lb_delta_prime,
             step=self.training_steps)
         tf.summary.scalar(
-            f'{loss_prefix}/ub_cql_alpha', ub_cql_alpha,
-            step=self.training_steps)
-        tf.summary.scalar(
-            f'{loss_prefix}/lb_cql_alpha', lb_cql_alpha,
-            step=self.training_steps)
+            f'{loss_prefix}/bonus', mean_bonus, step=self.training_steps)
+        for i, delta in enumerate(self._lcb_deltas):
+          tf.summary.scalar(
+              f'{loss_prefix}/ub_delta_vals_data_{delta}',
+              ub_delta_data[i],
+              step=self.training_steps)
+          tf.summary.scalar(
+              f'{loss_prefix}/ub_delta_vals_pi_{delta}',
+              ub_delta_pi[i],
+              step=self.training_steps)
+          tf.summary.scalar(
+              f'{loss_prefix}/lb_delta_vals_data_{delta}',
+              lb_delta_data[i],
+              step=self.training_steps)
+          tf.summary.scalar(
+              f'{loss_prefix}/lb_delta_vals_pi_{delta}',
+              lb_delta_pi[i],
+              step=self.training_steps)
+
       self.summary_writer.flush()
 
     if self.training_steps % target_update_period == 0:
       self._sync_weights()
+
+  def reset_deltas(self):
+    self._logp_lcb_deltas = onp.zeros(9)

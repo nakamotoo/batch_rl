@@ -24,6 +24,7 @@ import time
 from dopamine.discrete_domains import checkpointer
 from dopamine.discrete_domains import iteration_statistics
 from dopamine.discrete_domains import run_experiment
+from batch_rl.fixed_replay.jax_agents import uncertainty_agent
 
 import gin
 import tensorflow.compat.v1 as tf
@@ -70,6 +71,29 @@ class FixedReplayRunner(run_experiment.Runner):
     tf.logging.info('Average training steps per second: %.2f',
                     self._training_steps / time_delta)
 
+  def _run_eval_phase(self, statistics):
+    """Run evaluation phase.
+    Args:
+      statistics: `IterationStatistics` object which records the experimental
+        results. Note - This object is modified by this method.
+    Returns:
+      num_episodes: int, The number of episodes run in this phase.
+      average_reward: float, The average reward generated in this phase.
+    """
+    # Perform the evaluation phase -- no learning.
+    self._agent.eval_mode = True
+    # Reset delta inference.
+    if isinstance(self._agent, uncertainty_agent.FixedReplayJaxUncertaintyAgent):
+      self._agent.reset_deltas()
+
+    _, sum_returns, num_episodes = self._run_one_phase(
+        self._evaluation_steps, statistics, 'eval')
+    average_return = sum_returns / num_episodes if num_episodes > 0 else 0.0
+    logging.info('Average undiscounted return per evaluation episode: %.2f',
+                 average_return)
+    statistics.append({'eval_average_return': average_return})
+    return num_episodes, average_return
+
   def _run_one_iteration(self, iteration):
     """Runs one iteration of agent/environment interaction."""
     statistics = iteration_statistics.IterationStatistics()
@@ -103,5 +127,9 @@ class FixedReplayRunner(run_experiment.Runner):
         tf.Summary.Value(tag='Eval/AverageReturns',
                          simple_value=average_reward_eval)
     ])
+    # Record best delta.
+    if isinstance(self._agent, uncertainty_agent.FixedReplayJaxUncertaintyAgent):
+      summary.value.add(
+        tag='Eval/Delta', simple_value=self._agent._lcb_delta)
     self._summary_writer.add_summary(summary, iteration)
 
