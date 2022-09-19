@@ -1,3 +1,4 @@
+import collections
 import time
 from typing import Tuple, Union
 
@@ -7,6 +8,15 @@ import gin
 import jax
 import jax.numpy as jnp
 import numpy as onp
+
+
+ImplicitDeltaNetworkType = collections.namedtuple(
+    'delta_network', ['ub_delta_values', 'lb_delta_values', 'representation'])
+
+
+def preprocess_atari_inputs(x):
+  """Input normalization for Atari 2600 input frames."""
+  return x.astype(jnp.float32) / 255.
 
 
 ### Implicit Delta Network ###

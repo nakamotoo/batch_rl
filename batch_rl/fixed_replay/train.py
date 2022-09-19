@@ -78,7 +78,7 @@ def create_agent(sess, environment, replay_data_dir, summary_writer=None):
   elif FLAGS.agent_name == 'jax_quantile':
     agent = jax_quantile_agent.FixedReplayJaxQuantileAgent  
   elif FLAGS.agent_name == 'jax_uncertainty':
-    agent = jax_quantile_agent.FixedReplayJaxUncertaintyAgent  
+    agent = jax_uncertainty_agent.FixedReplayJaxUncertaintyAgent  
   else:
     raise ValueError('{} is not a valid agent name'.format(FLAGS.agent_name))
 
