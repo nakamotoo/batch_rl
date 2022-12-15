@@ -29,7 +29,6 @@ FixedReplayJaxUncertaintyAgent.num_delta_samples = 16
 FixedReplayJaxUncertaintyAgent.num_delta_prime_samples = 16
 FixedReplayJaxUncertaintyAgent.dr3_alpha = 0.03
 FixedReplayJaxUncertaintyAgent.lcb_alpha = 0.1
-FixedReplayJaxUncertaintyAgent.lcb_delta = 0.25
 FixedReplayJaxUncertaintyAgent.lcb_threshold = 0.9
 
 atari_lib.create_atari_environment.game_name = 'Breakout'

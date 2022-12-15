@@ -5,6 +5,7 @@ import functools
 
 from absl import logging
 from dopamine.jax.agents.dqn import dqn_agent as base_dqn_agent
+from batch_rl.fixed_replay.replay_memory import fixed_replay_buffer
 import gin
 import jax
 import jax.numpy as jnp
@@ -215,28 +216,25 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
   grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
   (loss, aux), grad = grad_fn(
       online_params, target_ub_delta_vals, target_lb_delta_vals, delta_samples)
-  ub_delta_prime, lb_delta_prime, ub_cql_alpha, lb_cql_alpha = aux
+  ub_delta_prime, lb_delta_prime, mean_bonus = aux
   updates, optimizer_state = optimizer.update(
       grad, optimizer_state, params=online_params)
   return (rng, optimizer_state, online_params,
-          rnd_optimizer_state, rnd_online_params, loss, rnd_loss,
-          ub_delta_prime, lb_delta_prime, ub_cql_alpha, lb_cql_alpha)
+          loss, ub_delta_prime, lb_delta_prime, mean_bonus)
 
 
-@functools.partial(jax.jit, static_argnums=(0, 4))
+@functools.partial(jax.jit, static_argnums=(0))
 def compute_metrics(network_def, online_params, states, actions, lcb_deltas):
   """Compute metrics to log on tensorboard."""
-  deltas = jnp.array(deltas)
-
   def online(state):
-    return network_def.apply(params, state, deltas)
+    return network_def.apply(online_params, state, lcb_deltas)
 
   predicted = jax.vmap(online)(states)
 
   replay_action_ub_delta_values = jax.vmap(lambda x, y: x[:, y])(
     predicted.ub_delta_values, actions)
   ub_delta_vals_data = jnp.mean(replay_action_ub_delta_values, axis=0)
-  ub_delta_vals_pi = jnp.mean(jnp.max(predicted.ub_delta_values, axis=-1))
+  ub_delta_vals_pi = jnp.mean(jnp.max(predicted.ub_delta_values, axis=-1), axis=0)
 
   replay_action_lb_delta_values = jax.vmap(lambda x, y: x[:, y])(
     predicted.lb_delta_values, actions)
@@ -246,18 +244,16 @@ def compute_metrics(network_def, online_params, states, actions, lcb_deltas):
           lb_delta_vals_data, lb_delta_vals_pi)
 
 
-@functools.partial(jax.jit, static_argnums=(0, 2, 5, 6, 7, 8))
+@functools.partial(jax.jit, static_argnums=(0, 2, 5, 6, 7))
 def compute_logp_deltas(network_def, online_params, state, action, next_state,
                         reward, terminal, cumulative_gamma, lcb_deltas):
   """Compute metrics to log on tensorboard."""
-  deltas = jnp.array(deltas)
-
   is_terminal_multiplier = 1. - terminals.astype(jnp.float32)
   # Incorporate terminal state to discount factor.
   gamma_with_terminal = cumulative_gamma * is_terminal_multiplier
 
-  predicted = network_def.apply(params, states, deltas)
-  next_predicted = network_def.apply(params, next_states, deltas)
+  predicted = network_def.apply(online_params, states, lcb_deltas)
+  next_predicted = network_def.apply(online_params, next_states, lcb_deltas)
 
   replay_action_lb_delta_values = predicted.lb_delta_values[:, actions]
   targets = (rewards + gamma_with_terminal *
@@ -360,9 +356,9 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
     """
     logging.info('Creating %s agent with the following parameters:',
                  self.__class__.__name__)
-    self.replay_data_dir = replay_data_dir
-    self.replay_suffix = replay_suffix
-    self.replay_scheme = replay_scheme
+    self._replay_data_dir = replay_data_dir
+    self._replay_suffix = replay_suffix
+    self._replay_scheme = replay_scheme
     if replay_buffer_builder is not None:
       self._build_replay_buffer = replay_buffer_builder
     if init_checkpoint_dir is not None:
@@ -392,13 +388,13 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
   
   def _build_replay_buffer(self):
     """Creates the fixed replay buffer used by the agent."""
-    if self.replay_scheme not in ['uniform', 'prioritized']:
-      raise ValueError('Invalid replay scheme: {}'.format(self.replay_scheme))
+    if self._replay_scheme not in ['uniform', 'prioritized']:
+      raise ValueError('Invalid replay scheme: {}'.format(self._replay_scheme))
     # Both replay schemes use the same data structure, but the 'uniform' scheme
     # sets all priorities to the same value (which yields uniform sampling).
     return fixed_replay_buffer.FixedReplayBuffer(
-        data_dir=self.replay_data_dir,
-        replay_suffix=self.replay_suffix,
+        data_dir=self._replay_data_dir,
+        replay_suffix=self._replay_suffix,
         observation_shape=self.observation_shape,
         stack_size=self.stack_size,
         update_horizon=self.update_horizon,
@@ -409,8 +405,8 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
     self._rng, rng1, rng2, rng3 = jax.random.split(self._rng, num=4)
     self.online_params = self.network_def.init(
         rng1, x=self.state, deltas=jnp.zeros(shape=[1]))
-    self.optimizer = dqn_agent.create_fine_tuning_optimizer(
-        self._optimizer_name, inject_hparams=True)
+    self.optimizer = base_dqn_agent.create_optimizer(
+        self._optimizer_name)
     self.optimizer_state = self.optimizer.init(self.online_params)
     self.target_network_params = self.online_params
     # RND network and optimizer
@@ -489,7 +485,7 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
       self._logp_lcb_deltas += compute_logp_deltas(
         self.network_def, self.online_params, self.preprocess_fn(self.last_state),
         self.action, self.preprocess_fn(self.state), reward, False,
-        self._lcb_deltas, self.cumulative_gamma)
+        jnp.array(self._lcb_deltas), self.cumulative_gamma)
       self._lcb_delta = self._lcb_deltas[onp.argmax(self._logp_lcb_deltas)]
 
     self._rng, self.action = select_action(
@@ -512,8 +508,7 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
 
   def _opt_step(self, replay_elements, loss_prefix, target_update_period):
     (self._rng, self.optimizer_state, self.online_params,
-     self.rnd_optimizer_state, self.rnd_online_params, loss, rnd_loss,
-     mean_ub_delta_prime, mean_lb_delta_prime, mean_bonus) = train(
+     loss, mean_ub_delta_prime, mean_lb_delta_prime, mean_bonus) = train(
          self.network_def, self.online_params, self.target_network_params,
          self.optimizer, self.optimizer_state,
          self.preprocess_fn(replay_elements['state']),
@@ -526,7 +521,7 @@ class FixedReplayJaxUncertaintyAgent(base_dqn_agent.JaxDQNAgent):
     (ub_delta_data, ub_delta_pi, lb_delta_data, lb_delta_pi) = compute_metrics(
         self.network_def, self.online_params,
         self.preprocess_fn(replay_elements['state']),
-        replay_elements['action'], self._lcb_deltas)
+        replay_elements['action'], jnp.array(self._lcb_deltas))
     if (self.summary_writer is not None and self.training_steps > 0 and
         self.training_steps > 0 and
         self.training_steps % self.summary_writing_frequency == 0):
