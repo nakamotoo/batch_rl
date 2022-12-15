@@ -98,16 +98,25 @@ class ExplorationJaxRainbowAgent(rainbow_agent.JaxRainbowAgent):
 
   def __init__(self,
                num_actions,
+               init_checkpoint_dir=None,
                std_c=0.0,
                **kwargs):
     """Initializes the agent and constructs the components of its graph.
 
     Args:
       num_actions: int, number of actions the agent can take at any state.
+      init_checkpoint_dir: str, directory from which initial checkpoint before
+        training is loaded if there doesn't exist any checkpoint in the current
+        agent directory. If None, no initial checkpoint is loaded.
       std_c: float, weight for standard deviation for pessimistic Q-values.
       **kwargs: Arbitrary keyword arguments.
     """
     logging.info('Creating ExplorationJaxRainbowAgent')
+    if init_checkpoint_dir is not None:
+      self._init_checkpoint_dir = os.path.join(
+          init_checkpoint_dir, 'checkpoints')
+    else:
+      self._init_checkpoint_dir = None
     self.std_c = std_c
     super(ExplorationJaxRainbowAgent, self).__init__(num_actions, **kwargs)
 

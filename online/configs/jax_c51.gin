@@ -1,7 +1,7 @@
-import dopamine.agents.rainbow.rainbow_agent
 import dopamine.discrete_domains.atari_lib
 import dopamine.discrete_domains.run_experiment
 import dopamine.replay_memory.prioritized_replay_buffer
+import online.jax_agents.rainbow_agent
 import gin.tf.external_configurables
 
 ExplorationJaxRainbowAgent.num_atoms = 51

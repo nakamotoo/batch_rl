@@ -25,6 +25,7 @@ from batch_rl.multi_head import multi_network_dqn_agent
 from batch_rl.multi_head import quantile_agent
 from dopamine.agents.dqn import dqn_agent
 from dopamine.agents.rainbow import rainbow_agent
+from online.jax_agents import dqn_agent as jax_dqn_agent
 from online.jax_agents import rainbow_agent as jax_rainbow_agent
 from dopamine.discrete_domains import run_experiment
 import tensorflow.compat.v1 as tf
@@ -68,6 +69,8 @@ def create_agent(sess, environment, summary_writer=None):
     agent = quantile_agent.QuantileAgent
   elif FLAGS.agent_name == 'rem':
     agent = multi_network_dqn_agent.MultiNetworkDQNAgent
+  elif FLAGS.agent_name == 'jax_dqn':
+    agent = jax_dqn_agent.ExplorationJaxDQNAgent
   elif FLAGS.agent_name == 'jax_c51':
     # Gin config ensures that we only run C51 component of Rainbow
     agent = jax_rainbow_agent.ExplorationJaxRainbowAgent
@@ -76,7 +79,8 @@ def create_agent(sess, environment, summary_writer=None):
 
   if FLAGS.agent_name.startswith('jax'):
     return agent(num_actions=environment.action_space.n,
-                 summary_writer=summary_writer)
+                 summary_writer=summary_writer,
+                 init_checkpoint_dir=FLAGS.init_checkpoint_dir)
   else:
     return agent(sess, num_actions=environment.action_space.n,
                  summary_writer=summary_writer)

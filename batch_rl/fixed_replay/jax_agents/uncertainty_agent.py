@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as onp
 import optax
 import tensorflow as tf
-from batch_rl.jax import networks
+from batch_rl.networks import jax_networks as networks
 
 
 @gin.configurable
