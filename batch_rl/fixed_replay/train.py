@@ -96,6 +96,8 @@ def create_agent(sess, environment, replay_data_dir, summary_writer=None):
 
 def main(unused_argv):
   tf.logging.set_verbosity(tf.logging.INFO)
+  tf.disable_v2_behavior()
+
   base_run_experiment.load_gin_configs(FLAGS.gin_files, FLAGS.gin_bindings)
   replay_data_dir = os.path.join(FLAGS.replay_dir, 'replay_logs')
   create_agent_fn = functools.partial(
@@ -105,6 +107,7 @@ def main(unused_argv):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   flags.mark_flag_as_required('replay_dir')
   flags.mark_flag_as_required('base_dir')
   app.run(main)

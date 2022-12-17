@@ -89,7 +89,7 @@ class FixedReplayRunner(run_experiment.Runner):
     _, sum_returns, num_episodes = self._run_one_phase(
         self._evaluation_steps, statistics, 'eval')
     average_return = sum_returns / num_episodes if num_episodes > 0 else 0.0
-    logging.info('Average undiscounted return per evaluation episode: %.2f',
+    tf.logging.info('Average undiscounted return per evaluation episode: %.2f',
                  average_return)
     statistics.append({'eval_average_return': average_return})
     return num_episodes, average_return
