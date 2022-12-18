@@ -81,7 +81,6 @@ def create_agent(sess, environment, replay_data_dir, summary_writer=None):
     agent = jax_uncertainty_agent.FixedReplayJaxUncertaintyAgent  
   else:
     raise ValueError('{} is not a valid agent name'.format(FLAGS.agent_name))
-
   if FLAGS.agent_name.startswith('jax'):
     return agent(num_actions=environment.action_space.n,
                  replay_data_dir=replay_data_dir, summary_writer=summary_writer,
