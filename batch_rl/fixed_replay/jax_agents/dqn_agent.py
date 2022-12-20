@@ -47,6 +47,7 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
           cql_weight_penalty=0.1, loss_type='huber'):
   """Run the training step."""
   def loss_fn(params, target):
+
     def q_online(state):
       return network_def.apply(params, state)
 
@@ -61,7 +62,14 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
     # Add CQL penalty
     cql_loss = jnp.mean(jax.vmap(conservative_q_loss)(q_values, replay_chosen_q))
 
-    return loss + cql_weight_penalty * cql_loss, (loss, cql_loss)
+    log_metrics = {
+      "bellman_loss": loss,
+      "cql_loss": cql_loss,
+      "replay_chosen_q": replay_chosen_q.mean(),
+      "logsumexp_q": jax.scipy.special.logsumexp(q_values)
+    }
+
+    return loss + cql_weight_penalty * cql_loss, log_metrics
 
   def q_target(state):
     return network_def.apply(target_params, state)
@@ -72,12 +80,11 @@ def train(network_def, online_params, target_params, optimizer, optimizer_state,
                               terminals,
                               cumulative_gamma)
   grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-  (_, (loss, cql_loss)), grad = grad_fn(online_params, target)
+  (_, log_metrics), grad = grad_fn(online_params, target)
   updates, optimizer_state = optimizer.update(grad, optimizer_state,
                                               params=online_params)
   online_params = optax.apply_updates(online_params, updates)
-  return optimizer_state, online_params, loss, cql_loss
-
+  return optimizer_state, online_params, log_metrics
 
 @gin.configurable
 class FixedReplayJaxDQNAgent(dqn_agent.JaxDQNAgent):
@@ -108,6 +115,10 @@ class FixedReplayJaxDQNAgent(dqn_agent.JaxDQNAgent):
       'Creating FixedReplayJaxAgent with replay directory: %s', replay_data_dir)
     logging.info('\t init_checkpoint_dir %s', init_checkpoint_dir)
     logging.info('\t replay_suffix %s', replay_suffix)
+    print("====================")
+    print("cql_penalty_weight", cql_penalty_weight)
+    print(kwargs)
+    print("====================")
     # Set replay_log_dir before calling parent's initializer
     self._replay_data_dir = replay_data_dir
     self._replay_suffix = replay_suffix
@@ -143,7 +154,7 @@ class FixedReplayJaxDQNAgent(dqn_agent.JaxDQNAgent):
         self._sample_from_replay_buffer()
         states = self.preprocess_fn(self.replay_elements['state'])
         next_states = self.preprocess_fn(self.replay_elements['next_state'])
-        self.optimizer_state, self.online_params, loss, cql_loss = train(
+        self.optimizer_state, self.online_params, log_metrics = train(
             self.network_def,
             self.online_params,
             self.target_network_params,
@@ -157,12 +168,11 @@ class FixedReplayJaxDQNAgent(dqn_agent.JaxDQNAgent):
             self.cumulative_gamma,
             self.cql_penalty_weight,
             self._loss_type)
+
         if (self.summary_writer is not None and
             self.training_steps > 0 and
             self.training_steps % self.summary_writing_frequency == 0):
-          summary = tf.Summary(value=[
-              tf.Summary.Value(tag='Losses/HuberLoss', simple_value=loss),
-              tf.Summary.Value(tag='Losses/CQLPenalty', simple_value=cql_loss)])
+          summary = tf.Summary(value=[tf.Summary.Value(tag=f'Losses/{key}', simple_value=value) for key, value in log_metrics.items() ])
           self.summary_writer.add_summary(summary, self.training_steps)
           self.summary_writer.flush()
       if self.training_steps % self.target_update_period == 0:
